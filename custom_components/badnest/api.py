@@ -52,6 +52,8 @@ class NestAPI():
         self.login()
         self._get_devices()
         self.update()
+        for camera in self.cameras:
+            self.update_camera(camera)
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -68,7 +70,8 @@ class NestAPI():
     def login(self):
         if self._issue_token and self._cookie:
             self._login_google(self._issue_token, self._cookie)
-        self._login_dropcam()
+        else:
+            self._login_nest(self._email, self._password)
 
     def _login_google(self, issue_token, cookie):
         headers = {
@@ -97,20 +100,18 @@ class NestAPI():
         self._user_id = r.json()['claims']['subject']['nestId']['id']
         self._access_token = r.json()['jwt']
 
-    def _login_dropcam(self):
-        self._session.post(
-            f"{API_URL}/dropcam/api/login",
-            data={"access_token": self._access_token}
-        )
-
     def _get_cameras(self):
         cameras = []
 
         try:
-            r = self._session.get(
-                f"{CAMERA_WEBAPI_BASE}/api/cameras."
-                + "get_owned_and_member_of_with_properties"
-            )
+            headers = {
+                'User-Agent': USER_AGENT,
+                'X-Requested-With': 'XmlHttpRequest',
+                'Referer': 'https://home.nest.com/',
+                'cookie': f"user_token={self._access_token}"
+            }
+            r = self._session.get(url=f"{CAMERA_WEBAPI_BASE}/api/cameras."
+                + "get_owned_and_member_of_with_properties", headers=headers)
 
             for camera in r.json()["items"]:
                 cameras.append(camera['uuid'])
@@ -166,7 +167,6 @@ class NestAPI():
             self.login()
             return self.get_devices()
 
-
     def _map_nest_protect_state(self, value):
         if value == 0:
             return "Ok"
@@ -176,6 +176,39 @@ class NestAPI():
             return "Emergency"
         else:
             return "Unknown"
+
+    def update_camera(self, camera):
+        try:
+            headers = {
+                'User-Agent': USER_AGENT,
+                'X-Requested-With': 'XmlHttpRequest',
+                'Referer': 'https://home.nest.com/',
+                'cookie': f"cztoken={self._access_token}"
+            }
+            r = self._session.get(url=f"{API_URL}/dropcam/api/cameras/{camera}", headers=headers)
+            sensor_data = r.json()[0]
+            self.device_data[camera]['name'] = \
+                sensor_data["name"]
+            self.device_data[camera]['is_online'] = \
+                sensor_data["is_online"]
+            self.device_data[camera]['is_streaming'] = \
+                sensor_data["is_streaming"]
+            self.device_data[camera]['battery_voltage'] = \
+                sensor_data["rq_battery_battery_volt"]
+            self.device_data[camera]['ac_voltage'] = \
+                sensor_data["rq_battery_vbridge_volt"]
+            self.device_data[camera]['location'] = \
+                sensor_data["location"]
+            self.device_data[camera]['data_tier'] = \
+                sensor_data["properties"]["streaming.data-usage-tier"]
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to update, trying again')
+            self.update_camera(camera)
+        except KeyError:
+            _LOGGER.debug('Failed to update, trying to log in again')
+            self.login()
+            self.update_camera(camera)
 
     def update(self):
         try:
@@ -300,27 +333,6 @@ class NestAPI():
                         sensor_data['current_temperature']
                     self.device_data[sn]['battery_level'] = \
                         sensor_data['battery_level']
-
-            # Cameras
-            for camera in self.cameras:
-                r = self._session.get(
-                    f"{API_URL}/dropcam/api/cameras/{camera}"
-                )
-                sensor_data = r.json()[0]
-                self.device_data[camera]['name'] = \
-                    sensor_data["name"]
-                self.device_data[camera]['is_online'] = \
-                    sensor_data["is_online"]
-                self.device_data[camera]['is_streaming'] = \
-                    sensor_data["is_streaming"]
-                self.device_data[camera]['battery_voltage'] = \
-                    sensor_data["rq_battery_battery_volt"]
-                self.device_data[camera]['ac_voltage'] = \
-                    sensor_data["rq_battery_vbridge_volt"]
-                self.device_data[camera]['location'] = \
-                    sensor_data["location"]
-                self.device_data[camera]['data_tier'] = \
-                    sensor_data["properties"]["streaming.data-usage-tier"]
         except requests.exceptions.RequestException as e:
             _LOGGER.error(e)
             _LOGGER.error('Failed to update, trying again')
@@ -489,9 +501,14 @@ class NestAPI():
             return
 
         try:
-            r = self._session.post(
-                f"{CAMERA_WEBAPI_BASE}/api/dropcams.set_properties",
-                data={property: value, "uuid": device_id},
+            headers = {
+                'User-Agent': USER_AGENT,
+                'X-Requested-With': 'XmlHttpRequest',
+                'Referer': 'https://home.nest.com/',
+                'cookie': f"user_token={self._access_token}"
+            }
+            r = self._session.get(url=f"{CAMERA_WEBAPI_BASE}/api/dropcams.set_properties",
+                data={property: value, "uuid": device_id}, headers=headers
             )
 
             return r.json()["items"]
@@ -509,24 +526,27 @@ class NestAPI():
         if device_id not in self.cameras:
             return
 
-        return self._set_properties(device_id, "streaming.enabled", "false")
+        return self._camera_set_properties(device_id, "streaming.enabled", "false")
 
     def camera_turn_on(self, device_id):
         if device_id not in self.cameras:
             return
 
-        return self._set_properties(device_id, "streaming.enabled", "true")
+        return self._camera_set_properties(device_id, "streaming.enabled", "true")
 
     def camera_get_image(self, device_id, now):
         if device_id not in self.cameras:
             return
 
         try:
-            r = self._session.get(
-                f'{self._camera_url}/get_image?uuid={device_id}' +
-                f'&cachebuster={now}'
-            )
-
+            headers = {
+                'User-Agent': USER_AGENT,
+                'X-Requested-With': 'XmlHttpRequest',
+                'Referer': 'https://home.nest.com/',
+                'cookie': f"user_token={self._access_token}"
+            }
+            r = self._session.get(url=f'{self._camera_url}/get_image?uuid={device_id}' +
+                f'&cachebuster={now}', headers=headers)
             return r.content
         except requests.exceptions.RequestException as e:
             _LOGGER.error(e)
