@@ -209,6 +209,12 @@ class NestAPI():
             _LOGGER.debug('Failed to update, trying to log in again')
             self.login()
             self.update_camera(camera)
+        # Catch the right error and re-authenticate, login expires after 60 min
+        except ValueError as e:
+            _LOGGER.error(e)
+            _LOGGER.debug('Failed to update JSON, log in again')
+            self.login()
+            self.update_camera(camera)
 
     def update(self):
         try:
